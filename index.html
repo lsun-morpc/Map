@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>US Travel Index</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        #map {
+            height: 600px;
+            width: 1000px;
+            margin: 20px auto;
+            background-color: #fff;
+            border: 1px solid #ccc;
+        }
+        #controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 8px 16px;
+            font-size: 14px;
+            margin: 0 5px;
+            cursor: pointer;
+        }
+        #travel-index {
+            font-size: 24px;
+            margin-top: 10px;
+        }
+        #level-selector {
+            position: absolute;
+            background: white;
+            border: 1px solid #ccc;
+            padding: 10px;
+            display: none;
+            z-index: 1000;
+        }
+        #level-selector a {
+            display: block;
+            padding: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            color: #000;
+        }
+        #level-selector a:hover {
+            background: #f0f0f0;
+        }
+    </style>
+</head>
+<body>
+    <h2>US Travel Index</h2>
+    <div id="map"></div>
+    <div id="controls">
+        <button id="reset-btn">Reset</button>
+        <button id="export-btn">Export SVG</button>
+    </div>
+    <div id="travel-index">Travel Index: 0</div>
+    <div id="level-selector">
+        <a data-level="0">Never Been (0)</a>
+        <a data-level="1">Passed (1)</a>
+        <a data-level="2">Stopped (2)</a>
+        <a data-level="3">Visited (3)</a>
+        <a data-level="4">Stayed (4)</a>
+        <a data-level="5">Lived (5)</a>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script>
+        // Initialize Leaflet map
+        const map = L.map('map', {
+            zoomControl: true
+        }).setView([37.8, -96], 4);
+
+        // Add CartoDB Positron basemap
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: 'abcd',
+            maxZoom: 19
+        }).addTo(map);
+
+        const levelSelector = document.getElementById('level-selector');
+        const travelIndexDisplay = document.getElementById('travel-index');
+        const resetBtn = document.getElementById('reset-btn');
+        const exportBtn = document.getElementById('export-btn');
+        let stateLayers = {};
+        let currentState = null;
+
+        // Color scale for travel levels
+        const colorScale = {
+            0: '#e0e0e0',
+            1: '#88AEFF',
+            2: '#A8FFBE',
+            3: '#FFE57E',
+            4: '#FFB57E',
+            5: '#FF7E7E'
+        };
+
+        // Load GeoJSON data for US states
+        fetch('https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json')
+            .then(response => response.json())
+            .then(geojson => {
+                const geojsonLayer = L.geoJSON(geojson, {
+                    style: feature => ({
+                        fillColor: colorScale[feature.properties.level || 0],
+                        fillOpacity: 0.7,
+                        color: '#000',
+                        weight: 2,
+                        opacity: 1
+                    }),
+                    onEachFeature: (feature, layer) => {
+                        const stateName = feature.properties.name;
+                        feature.properties.level = feature.properties.level || 0;
+                        stateLayers[stateName] = layer;
+
+                        layer.on({
+                            mouseover: () => {
+                                layer.setStyle({
+                                    fillOpacity: 0.9,
+                                    weight: 3
+                                });
+                            },
+                            mouseout: () => {
+                                layer.setStyle({
+                                    fillOpacity: 0.7,
+                                    weight: 2
+                                });
+                            },
+                            click: (e) => {
+                                const rect = map.getContainer().getBoundingClientRect();
+                                const mouseX = e.originalEvent.clientX - rect.left;
+                                const mouseY = e.originalEvent.clientY - rect.top;
+                                levelSelector.style.left = `${mouseX}px`;
+                                levelSelector.style.top = `${mouseY}px`;
+                                levelSelector.style.display = 'block';
+                                currentState = layer;
+                                e.originalEvent.stopPropagation();
+                            }
+                        });
+                    }
+                }).addTo(map);
+
+                // Set travel level
+                levelSelector.querySelectorAll('a').forEach(option => {
+                    option.addEventListener('click', (e) => {
+                        const level = e.target.getAttribute('data-level');
+                        currentState.feature.properties.level = parseInt(level);
+                        currentState.setStyle({ fillColor: colorScale[level] });
+                        levelSelector.style.display = 'none';
+                        updateTravelIndex();
+                    });
+                });
+
+                // Initial travel index
+                updateTravelIndex();
+            })
+            .catch(error => console.error('Error loading GeoJSON:', error));
+
+        // Hide level selector on outside click
+        document.addEventListener('click', () => {
+            levelSelector.style.display = 'none';
+        });
+
+        // Prevent closing when clicking inside selector
+        levelSelector.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+
+        // Reset all levels and zoom
+        resetBtn.addEventListener('click', () => {
+            Object.values(stateLayers).forEach(layer => {
+                layer.feature.properties.level = 0;
+                layer.setStyle({ fillColor: colorScale[0] });
+            });
+            map.setView([37.8, -96], 4); // Reset to original zoom and center
+            updateTravelIndex();
+        });
+
+        // Update travel index
+        function updateTravelIndex() {
+            const total = Object.values(stateLayers).reduce((sum, layer) => {
+                return sum + (layer.feature.properties.level || 0);
+            }, 0);
+            travelIndexDisplay.textContent = `Travel Index: ${total}`;
+            return total; // Return total for use in export
+        }
+
+        // Export as SVG with score
+        exportBtn.addEventListener('click', () => {
+            const svgWidth = 1000;
+            const svgHeight = 600;
+            const bounds = map.getBounds();
+            const widthLat = bounds.getEast() - bounds.getWest();
+            const heightLat = bounds.getNorth() - bounds.getSouth();
+            const scaleX = svgWidth / widthLat;
+            const scaleY = svgHeight / heightLat;
+
+            let svgString = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">`;
+            
+            // Add state paths
+            Object.values(stateLayers).forEach(layer => {
+                const paths = layer.toGeoJSON().geometry.coordinates;
+                const level = layer.feature.properties.level || 0;
+                const fill = colorScale[level];
+                paths.forEach((path, i) => {
+                    let d = "M";
+                    path.forEach((ring, j) => {
+                        if (Array.isArray(ring[0])) { // MultiPolygon
+                            ring.forEach((coord, k) => {
+                                const x = (coord[0] - bounds.getWest()) * scaleX;
+                                const y = (bounds.getNorth() - coord[1]) * scaleY;
+                                d += `${k === 0 ? '' : ' L'}${x},${y}`;
+                            });
+                            d += " Z";
+                        } else { // Polygon
+                            const x = (ring[0] - bounds.getWest()) * scaleX;
+                            const y = (bounds.getNorth() - ring[1]) * scaleY;
+                            d += `${j === 0 ? '' : ' L'}${x},${y}`;
+                        }
+                    });
+                    if (!Array.isArray(path[0])) d += " Z";
+                    svgString += `<path d="${d}" fill="${fill}" stroke="#000" stroke-width="2" data-state="${layer.feature.properties.name}" data-level="${level}" />`;
+                });
+            });
+
+            // Add travel index score as text
+            const totalScore = updateTravelIndex();
+            svgString += `<text x="${svgWidth / 2}" y="50" font-family="Arial" font-size="24" fill="#000" text-anchor="middle">Travel Index: ${totalScore}</text>`;
+            svgString += '</svg>';
+
+            const blob = new Blob([svgString], { type: "image/svg+xml" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "us-travel-index.svg";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        });
+    </script>
+</body>
+</html>

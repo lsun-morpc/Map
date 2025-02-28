@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>US Travel Index</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        #map {
+            height: 600px;
+            width: 1000px;
+            margin: 20px auto;
+            background-color: #fff;
+            border: 1px solid #ccc;
+        }
+        #controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 8px 16px;
+            font-size: 14px;
+            margin: 0 5px;
+            cursor: pointer;
+        }
+        #travel-index {
+            font-size: 24px;
+            margin-top: 10px;
+        }
+        #level-selector {
+            position: absolute;
+            background: white;
+            border: 1px solid #ccc;
+            padding: 10px;
+            display: none;
+            z-index: 1000;
+        }
+        #level-selector a {
+            display: block;
+            padding: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            color: #000;
+        }
+        #level-selector a:hover {
+            background: #f0f0f0;
+        }
+        #state-name {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .tab {
+            overflow: hidden;
+            border: 1px solid #ccc;
+            background-color: #f1f1f1;
+            width: 1000px;
+            margin: 0 auto 10px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .tab button {
+            background-color: inherit;
+            border: none;
+            outline: none;
+            cursor: pointer;
+            padding: 14px 16px;
+            transition: 0.3s;
+            font-size: 16px;
+            flex: 1;
+            text-align: center;
+        }
+        .tab button:hover {
+            background-color: #ddd;
+        }
+        .tab button.active {
+            background-color: #ccc;
+        }
+    </style>
+</head>
+<body>
+    <h2>US Travel Index</h2>
+    <div class="tab">
+        <button class="tablinks active" onclick="openTab(event, 'state')">State View</button>
+        <button class="tablinks" onclick="openTab(event, 'county')">County View</button>
+    </div>
+    <div id="map"></div>
+    <div id="controls">
+        <button id="reset-btn">Reset</button>
+        <button id="export-btn">Export SVG</button>
+    </div>
+    <div id="travel-index">Travel Index: 0</div>
+    <div id="level-selector">
+        <div id="state-name"></div>
+        <a data-level="0">Never Been (0)</a>
+        <a data-level="1">Passed (1)</a>
+        <a data-level="2">Stopped (2)</a>
+        <a data-level="3">Visited (3)</a>
+        <a data-level="4">Stayed (4)</a>
+        <a data-level="5">Lived (5)</a>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script>
+        const stateAbbreviations = {
+            "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "California": "CA",
+            "Colorado": "CO", "Connecticut": "CT", "Delaware": "DE", "Florida": "FL", "Georgia": "GA",
+            "Hawaii": "HI", "Idaho": "ID", "Illinois": "IL", "Indiana": "IN", "Iowa": "IA",
+            "Kansas": "KS", "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME", "Maryland": "MD",
+            "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN", "Mississippi": "MS",
+            "Missouri": "MO", "Montana": "MT", "Nebraska": "NE", "Nevada": "NV", "New Hampshire": "NH",
+            "New Jersey": "NJ", "New Mexico": "NM", "New York": "NY", "North Carolina": "NC",
+            "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK", "Oregon": "OR", "Pennsylvania": "PA",
+            "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD", "Tennessee": "TN",
+            "Texas": "TX", "Utah": "UT", "Vermont": "VT", "Virginia": "VA", "Washington": "WA",
+            "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY"
+        };
+
+        const map = L.map('map', {
+            zoomControl: true
+        }).setView([37.8, -96], 4);
+
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: 'abcd',
+            maxZoom: 19
+        }).addTo(map);
+
+        const levelSelector = document.getElementById('level-selector');
+        const stateNameDisplay = document.getElementById('state-name');
+        const travelIndexDisplay = document.getElementById('travel-index');
+        const resetBtn = document.getElementById('reset-btn');
+        const exportBtn = document.getElementById('export-btn');
+        let stateLayers = {};
+        let allCountiesLayer = null;
+        let currentLayer = null;
+        let currentView = 'state';
+        let stateLabelLayerGroup = L.layerGroup().addTo(map);
+
+        const colorScale = {
+            0: '#e0e0e0',
+            1: '#88AEFF',
+            2: '#A8FFBE',
+            3: '#FFE57E',
+            4: '#FFB57E',
+            5: '#FF7E7E'
+        };
+
+        // Load US states GeoJSON
+        fetch('https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json')
+            .then(response => response.json())
+            .then(geojson => {
+                const stateLayerGroup = L.geoJSON(geojson, {
+                    style: feature => ({
+                        fillColor: colorScale[feature.properties.level || 0],
+                        fillOpacity: 0.7,
+                        color: '#000',
+                        weight: 2,
+                        opacity: 1
+                    }),
+                    onEachFeature: (feature, layer) => {
+                        const stateName = feature.properties.name;
+                        const abbr = stateAbbreviations[stateName] || stateName.substring(0, 2).toUpperCase();
+                        feature.properties.level = feature.properties.level || 0;
+                        stateLayers[stateName] = layer;
+
+                        const center = layer.getBounds().getCenter();
+                        const label = L.marker(center, {
+                            icon: L.divIcon({
+                                className: 'state-label',
+                                html: `<span style="font-size: 12px; color: black;">${abbr}</span>`,
+                                iconSize: [30, 20]
+                            }),
+                            interactive: false
+                        });
+                        stateLabelLayerGroup.addLayer(label);
+
+                        layer.on({
+                            mouseover: () => layer.setStyle({ fillOpacity: 0.9, weight: 3 }),
+                            mouseout: () => layer.setStyle({ fillOpacity: 0.7, weight: 2 }),
+                            click: (e) => {
+                                if (currentView === 'state') {
+                                    stateNameDisplay.textContent = stateName;
+                                    showLevelSelector(e, layer);
+                                }
+                            }
+                        });
+                    }
+                }).addTo(map);
+
+                updateTravelIndexAndStateColors();
+            });
+
+        // Load all US counties for County View
+        function loadAllCounties() {
+            if (!allCountiesLayer) {
+                fetch('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json')
+                    .then(response => response.json())
+                    .then(geojson => {
+                        allCountiesLayer = L.geoJSON(geojson, {
+                            style: feature => ({
+                                fillColor: colorScale[feature.properties.level || 0],
+                                fillOpacity: 0.8,
+                                color: '#000',
+                                weight: 1,
+                                opacity: 1
+                            }),
+                            onEachFeature: (feature, layer) => {
+                                feature.properties.level = feature.properties.level || 0;
+                                layer.on({
+                                    mouseover: () => layer.setStyle({ fillOpacity: 0.9, weight: 2 }),
+                                    mouseout: () => layer.setStyle({ fillOpacity: 0.8, weight: 1 }),
+                                    click: (e) => {
+                                        const stateName = getStateNameFromFIPS(layer.feature.properties.STATE);
+                                        stateNameDisplay.textContent = stateName;
+                                        showLevelSelector(e, layer);
+                                    }
+                                });
+                            }
+                        }).addTo(map);
+                        updateTravelIndexAndStateColors();
+                    })
+                    .catch(error => console.error('Error loading all counties:', error));
+            } else {
+                allCountiesLayer.addTo(map);
+                updateTravelIndexAndStateColors();
+            }
+        }
+
+        function getStateFIPS(stateName) {
+            const fipsMap = {
+                "Alabama": "01", "Alaska": "02", "Arizona": "04", "Arkansas": "05", "California": "06",
+                "Colorado": "08", "Connecticut": "09", "Delaware": "10", "Florida": "12", "Georgia": "13",
+                "Hawaii": "15", "Idaho": "16", "Illinois": "17", "Indiana": "18", "Iowa": "19",
+                "Kansas": "20", "Kentucky": "21", "Louisiana": "22", "Maine": "23", "Maryland": "24",
+                "Massachusetts": "25", "Michigan": "26", "Minnesota": "27", "Mississippi": "28",
+                "Missouri": "29", "Montana": "30", "Nebraska": "31", "Nevada": "32", "New Hampshire": "33",
+                "New Jersey": "34", "New Mexico": "35", "New York": "36", "North Carolina": "37",
+                "North Dakota": "38", "Ohio": "39", "Oklahoma": "40", "Oregon": "41", "Pennsylvania": "42",
+                "Rhode Island": "44", "South Carolina": "45", "South Dakota": "46", "Tennessee": "47",
+                "Texas": "48", "Utah": "49", "Vermont": "50", "Virginia": "51", "Washington": "53",
+                "West Virginia": "54", "Wisconsin": "55", "Wyoming": "56"
+            };
+            return fipsMap[stateName] || "00";
+        }
+
+        function getStateNameFromFIPS(fips) {
+            const fipsMap = {
+                "01": "Alabama", "02": "Alaska", "04": "Arizona", "05": "Arkansas", "06": "California",
+                "08": "Colorado", "09": "Connecticut", "10": "Delaware", "12": "Florida", "13": "Georgia",
+                "15": "Hawaii", "16": "Idaho", "17": "Illinois", "18": "Indiana", "19": "Iowa",
+                "20": "Kansas", "21": "Kentucky", "22": "Louisiana", "23": "Maine", "24": "Maryland",
+                "25": "Massachusetts", "26": "Michigan", "27": "Minnesota", "28": "Mississippi",
+                "29": "Missouri", "30": "Montana", "31": "Nebraska", "32": "Nevada", "33": "New Hampshire",
+                "34": "New Jersey", "35": "New Mexico", "36": "New York", "37": "North Carolina",
+                "38": "North Dakota", "39": "Ohio", "40": "Oklahoma", "41": "Oregon", "42": "Pennsylvania",
+                "44": "Rhode Island", "45": "South Carolina", "46": "South Dakota", "47": "Tennessee",
+                "48": "Texas", "49": "Utah", "50": "Vermont", "51": "Virginia", "53": "Washington",
+                "54": "West Virginia", "55": "Wisconsin", "56": "Wyoming"
+            };
+            return fipsMap[fips] || "Unknown State";
+        }
+
+        function showLevelSelector(e, layer) {
+            const rect = map.getContainer().getBoundingClientRect();
+            const mouseX = e ? e.originalEvent.clientX - rect.left : rect.width / 2;
+            const mouseY = e ? e.originalEvent.clientY - rect.top : rect.height / 2;
+            levelSelector.style.left = `${mouseX}px`;
+            levelSelector.style.top = `${mouseY}px`;
+            levelSelector.style.display = 'block';
+            currentLayer = layer;
+            if (e) e.originalEvent.stopPropagation();
+        }
+
+        levelSelector.querySelectorAll('a').forEach(option => {
+            option.addEventListener('click', (e) => {
+                const level = parseInt(e.target.getAttribute('data-level'));
+                currentLayer.feature.properties.level = level;
+                currentLayer.setStyle({ fillColor: colorScale[level] });
+                levelSelector.style.display = 'none';
+                updateTravelIndexAndStateColors(); // Update index and state colors after each selection
+            });
+        });
+
+        document.addEventListener('click', () => levelSelector.style.display = 'none');
+        levelSelector.addEventListener('click', (e) => e.stopPropagation());
+
+        resetBtn.addEventListener('click', () => {
+            if (currentView === 'state') {
+                Object.values(stateLayers).forEach(layer => {
+                    layer.feature.properties.level = 0;
+                    layer.setStyle({ fillColor: colorScale[0], opacity: 1, fillOpacity: 0.7 });
+                });
+                stateLabelLayerGroup.clearLayers();
+                Object.values(stateLayers).forEach(layer => {
+                    const stateName = layer.feature.properties.name;
+                    const abbr = stateAbbreviations[stateName] || stateName.substring(0, 2).toUpperCase();
+                    const center = layer.getBounds().getCenter();
+                    const label = L.marker(center, {
+                        icon: L.divIcon({
+                            className: 'state-label',
+                            html: `<span style="font-size: 12px; color: black;">${abbr}</span>`,
+                            iconSize: [30, 20]
+                        }),
+                        interactive: false
+                    });
+                    stateLabelLayerGroup.addLayer(label);
+                });
+            } else if (currentView === 'county' && allCountiesLayer) {
+                allCountiesLayer.eachLayer(layer => {
+                    layer.feature.properties.level = 0;
+                    layer.setStyle({ fillColor: colorScale[0], opacity: 1, fillOpacity: 0.8 });
+                });
+                // Reset state levels to reflect cleared counties
+                Object.values(stateLayers).forEach(layer => {
+                    layer.feature.properties.level = 0;
+                });
+            }
+            map.setView([37.8, -96], 4);
+            updateTravelIndexAndStateColors();
+        });
+
+        function updateTravelIndexAndStateColors() {
+            let total = 0;
+
+            Object.keys(stateLayers).forEach(stateName => {
+                const countyLevels = allCountiesLayer ? allCountiesLayer.getLayers()
+                    .filter(layer => layer.feature.properties.STATE === getStateFIPS(stateName))
+                    .map(layer => layer.feature.properties.level)
+                    .filter(level => level > 0) : [];
+
+                let stateContribution = 0;
+                if (countyLevels.length === 1) {
+                    stateContribution = countyLevels[0]; // 1 county: use its level
+                } else if (countyLevels.length === 2) {
+                    stateContribution = Math.max(...countyLevels); // 2 counties: use the larger
+                } else if (countyLevels.length >= 2) {
+                    const maxLevel = Math.max(...countyLevels);
+                    const maxCount = countyLevels.filter(level => level === maxLevel).length;
+                    stateContribution = maxCount >= 2 ? Math.min(maxLevel + 1, 5) : maxLevel; // 2+ counties, 2+ max: max + 1, cap at 5
+                } else {
+                    stateContribution = stateLayers[stateName].feature.properties.level || 0; // Use state level if no counties
+                }
+
+                total += stateContribution;
+
+                // Update state level and color
+                stateLayers[stateName].feature.properties.level = stateContribution;
+                if (currentView === 'state') {
+                    stateLayers[stateName].setStyle({ fillColor: colorScale[stateContribution] });
+                }
+            });
+
+            travelIndexDisplay.textContent = `Travel Index: ${total}`;
+            return total;
+        }
+
+        exportBtn.addEventListener('click', () => {
+            const svgWidth = 1000;
+            const svgHeight = 600;
+            const bounds = map.getBounds();
+            const widthLat = bounds.getEast() - bounds.getWest();
+            const heightLat = bounds.getNorth() - bounds.getSouth();
+            const scaleX = svgWidth / widthLat;
+            const scaleY = svgHeight / heightLat;
+
+            let svgString = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">`;
+            
+            if (currentView === 'state') {
+                Object.values(stateLayers).forEach(layer => exportLayer(layer, 2));
+            } else if (currentView === 'county' && allCountiesLayer) {
+                allCountiesLayer.eachLayer(subLayer => exportLayer(subLayer, 1));
+            }
+
+            function exportLayer(layer, strokeWidth) {
+                const paths = layer.toGeoJSON().geometry.coordinates;
+                const level = layer.feature.properties.level || 0;
+                const fill = colorScale[level];
+                paths.forEach((path, i) => {
+                    let d = "M";
+                    path.forEach((ring, j) => {
+                        if (Array.isArray(ring[0])) {
+                            ring.forEach((coord, k) => {
+                                const x = (coord[0] - bounds.getWest()) * scaleX;
+                                const y = (bounds.getNorth() - coord[1]) * scaleY;
+                                d += `${k === 0 ? '' : ' L'}${x},${y}`;
+                            });
+                            d += " Z";
+                        } else {
+                            const x = (ring[0] - bounds.getWest()) * scaleX;
+                            const y = (bounds.getNorth() - ring[1]) * scaleY;
+                            d += `${j === 0 ? '' : ' L'}${x},${y}`;
+                        }
+                    });
+                    if (!Array.isArray(path[0])) d += " Z";
+                    svgString += `<path d="${d}" fill="${fill}" stroke="#000" stroke-width="${strokeWidth}" />`;
+                });
+            }
+
+            const totalScore = updateTravelIndexAndStateColors();
+            svgString += `<text x="${svgWidth / 2}" y="50" font-family="Arial" font-size="24" fill="#000" text-anchor="middle">Travel Index: ${totalScore}</text>`;
+            svgString += '</svg>';
+
+            const blob = new Blob([svgString], { type: "image/svg+xml" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "us-travel-index.svg";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        });
+
+        // Tab functionality
+        function openTab(evt, viewName) {
+            currentView = viewName;
+            updateTabStyles();
+
+            if (viewName === 'state') {
+                if (allCountiesLayer) allCountiesLayer.remove();
+                Object.values(stateLayers).forEach(layer => layer.setStyle({ opacity: 1, fillOpacity: 0.7 }));
+                stateLabelLayerGroup.clearLayers();
+                Object.values(stateLayers).forEach(layer => {
+                    const stateName = layer.feature.properties.name;
+                    const abbr = stateAbbreviations[stateName] || stateName.substring(0, 2).toUpperCase();
+                    const center = layer.getBounds().getCenter();
+                    const label = L.marker(center, {
+                        icon: L.divIcon({
+                            className: 'state-label',
+                            html: `<span style="font-size: 12px; color: black;">${abbr}</span>`,
+                            iconSize: [30, 20]
+                        }),
+                        interactive: false
+                    });
+                    stateLabelLayerGroup.addLayer(label);
+                });
+                map.setView([37.8, -96], 4);
+            } else if (viewName === 'county') {
+                Object.values(stateLayers).forEach(layer => layer.setStyle({ opacity: 0, fillOpacity: 0 }));
+                stateLabelLayerGroup.clearLayers();
+                loadAllCounties();
+                map.setView([37.8, -96], 4);
+            }
+            updateTravelIndexAndStateColors(); // Ensure index and colors reflect view switch
+        }
+
+        function updateTabStyles() {
+            const tablinks = document.getElementsByClassName("tablinks");
+            for (let i = 0; i < tablinks.length; i++) {
+                tablinks[i].className = tablinks[i].className.replace(" active", "");
+                if (tablinks[i].textContent.toLowerCase().includes(currentView)) {
+                    tablinks[i].className += " active";
+                }
+            }
+        }
+
+        // Initialize with state view
+        updateTabStyles();
+    </script>
+</body>
+</html>
